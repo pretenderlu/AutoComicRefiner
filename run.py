@@ -3,7 +3,38 @@ from PIL import Image, UnidentifiedImageError
 import shutil
 import logging
 import configparser
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - graceful fallback when tqdm is absent
+    class _SimpleTqdm:  # minimal stand-in used only when tqdm isn't installed
+        def __init__(self, iterable=None, total=None, desc=None, unit=None, **kwargs):
+            self.iterable = iterable
+            self.total = total
+            self.desc = desc
+            self.unit = unit or ""
+            self.count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+
+        def __iter__(self):
+            if self.iterable is None:
+                return iter(())
+            for item in self.iterable:
+                yield item
+
+        def update(self, n=1):
+            self.count += n
+
+        def close(self):
+            if self.total is not None and self.desc:
+                print(f"{self.desc}完成: {self.count}/{self.total}{self.unit}")
+
+    tqdm = _SimpleTqdm
 import multiprocessing
 import time
 
