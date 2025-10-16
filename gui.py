@@ -63,7 +63,10 @@ class AutoComicRefinerApp(tk.Tk):
         self._thumbnail_default_bg = None
         self._thumbnail_default_active_bg = None
         self._current_preview_load_token = None
-        self._preview_max_size = (820, 1020)
+        self._current_preview_image_pil = None
+        self._current_preview_resample = RESAMPLE_LANCZOS
+        self._current_preview_info_text = ""
+        self._preview_resize_job = None
         self._create_variables()
         self._build_ui()
         self._load_config_to_fields()
@@ -264,6 +267,7 @@ class AutoComicRefinerApp(tk.Tk):
             borderwidth=1,
         )
         self.preview_image_label.grid(row=0, column=0, sticky="nsew")
+        self.preview_image_label.bind('<Configure>', self._on_preview_label_resize)
         self.preview_info_var = tk.StringVar(value="")
         self.preview_info_label = ttk.Label(
             preview_frame,
@@ -499,6 +503,14 @@ class AutoComicRefinerApp(tk.Tk):
         self._thumbnail_buttons = []
         self._thumbnail_default_bg = None
         self._thumbnail_default_active_bg = None
+        self._current_preview_image_pil = None
+        self._current_preview_info_text = ""
+        if self._preview_resize_job is not None:
+            try:
+                self.after_cancel(self._preview_resize_job)
+            except ValueError:
+                pass
+            self._preview_resize_job = None
         for child in self.thumbnail_inner_frame.winfo_children():
             child.destroy()
         self.thumbnail_canvas.configure(scrollregion=(0, 0, 0, 0))
@@ -628,14 +640,14 @@ class AutoComicRefinerApp(tk.Tk):
                 else:
                     display_img = display_img.convert('L')
                 resample = RESAMPLE_NEAREST
-            display_img.thumbnail(self._preview_max_size, resample=resample)
-            photo = ImageTk.PhotoImage(display_img)
 
             def apply_preview():
                 if self._current_preview_load_token != load_token:
                     return
-                self._preview_image_tk = photo
-                self.preview_image_label.configure(image=photo, text="")
+                self._current_preview_image_pil = display_img
+                self._current_preview_resample = resample
+                self._current_preview_info_text = info_text
+                self._render_current_preview_image()
                 self.preview_info_var.set(info_text)
                 self._preview_current_index = index
                 self.preview_index_var.set(f"{index + 1} / {len(self._preview_image_paths)}")
@@ -652,6 +664,7 @@ class AutoComicRefinerApp(tk.Tk):
         self.preview_image_label.configure(image='', text="暂无预览")
         self.preview_info_var.set(f"加载预览失败: {exc}")
         self._preview_image_tk = None
+        self._current_preview_image_pil = None
 
     def _navigate_preview(self, step):
         if not self._preview_image_paths:
@@ -699,6 +712,32 @@ class AutoComicRefinerApp(tk.Tk):
         else:
             self.prev_button.state(['disabled'])
             self.next_button.state(['disabled'])
+
+    def _on_preview_label_resize(self, _event):
+        if self._preview_resize_job is not None:
+            try:
+                self.after_cancel(self._preview_resize_job)
+            except ValueError:
+                pass
+        self._preview_resize_job = self.after(120, self._render_current_preview_image)
+
+    def _render_current_preview_image(self):
+        self._preview_resize_job = None
+        if self._current_preview_image_pil is None:
+            return
+        max_width = self.preview_image_label.winfo_width()
+        max_height = self.preview_image_label.winfo_height()
+        if max_width <= 1:
+            max_width = self.preview_image_label.winfo_reqwidth() or 600
+        if max_height <= 1:
+            max_height = self.preview_image_label.winfo_reqheight() or 600
+        display_img = self._current_preview_image_pil.copy()
+        display_img.thumbnail((max_width, max_height), resample=self._current_preview_resample)
+        photo = ImageTk.PhotoImage(display_img)
+        self._preview_image_tk = photo
+        self.preview_image_label.configure(image=photo, text="")
+        if self._current_preview_info_text:
+            self.preview_info_var.set(self._current_preview_info_text)
 
     def _find_all_images(self, folder):
         image_paths = []

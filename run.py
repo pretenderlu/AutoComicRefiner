@@ -217,6 +217,56 @@ def config_parser_to_dict(config_parser, input_folder_root):
         'template_split_page2': filenames_cfg_proxy.get('template_split_page2')
     }
 
+
+def initialize_config_parser():
+    """创建包含默认值的配置解析器。"""
+    parser = configparser.ConfigParser()
+    for section, options in DEFAULT_CONFIG.items():
+        if not parser.has_section(section):
+            parser.add_section(section)
+        for key, value in options.items():
+            parser.set(section, key, value)
+    return parser
+
+
+def read_config_file(config_file_path_abs):
+    """读取配置文件并在缺失时应用默认值。"""
+    parser = initialize_config_parser()
+    if os.path.exists(config_file_path_abs):
+        parser.read(config_file_path_abs, encoding='utf-8')
+    return parser
+
+
+def save_config_parser(parser, config_file_path_abs):
+    """将配置写入指定路径。"""
+    with open(config_file_path_abs, 'w', encoding='utf-8') as configfile:
+        parser.write(configfile)
+
+
+def config_parser_to_dict(config_parser, input_folder_root):
+    """将 ConfigParser 配置转换为处理流程使用的字典。"""
+    settings_proxy = config_parser['Settings']
+    filenames_cfg_proxy = config_parser['Filenames']
+    return {
+        'input_folder_root': input_folder_root,
+        'is_dry_run': settings_proxy.getboolean('dry_run'),
+        'log_filename': settings_proxy.get('log_filename'),
+        'num_processes': settings_proxy.getint('num_processes'),
+        'resize_mode': settings_proxy.get('resize_mode'),
+        'target_height': settings_proxy.getint('target_height'),
+        'target_width': settings_proxy.getint('target_width'),
+        'max_height': settings_proxy.getint('max_height'),
+        'max_width': settings_proxy.getint('max_width'),
+        'output_format_for_others': settings_proxy.get('output_format_for_others'),
+        'jpeg_quality': settings_proxy.getint('jpeg_quality'),
+        'enable_double_page_split': settings_proxy.getboolean('enable_double_page_split'),
+        'split_left_to_right': settings_proxy.getboolean('split_order_is_left_to_right'),
+        'overwrite_existing': settings_proxy.getboolean('overwrite_existing_output_folders'),
+        'template_single': filenames_cfg_proxy.get('template_single'),
+        'template_split_page1': filenames_cfg_proxy.get('template_split_page1'),
+        'template_split_page2': filenames_cfg_proxy.get('template_split_page2')
+    }
+
 def get_script_directory():
     """获取当前运行脚本所在的目录"""
     # __file__ 是当前文件的路径。os.path.abspath确保我们得到绝对路径。
@@ -685,6 +735,31 @@ def process_images_with_config(cfg, config_file_path_abs=None, *, additional_log
     if total_errors > 0:
         logging.warning(f"处理中发生 {total_errors} 个错误。请检查日志。")
     logging.info(f"详细日志已保存到: {log_file_path}")
+
+    return {
+        'total_processed': total_processed_count,
+        'total_split': total_split_count,
+        'skipped_due_to_cache': skipped_due_to_cache,
+        'total_errors': total_errors,
+        'total_discovered': len(all_image_paths_discovered),
+        'total_to_process': len(tasks_to_process),
+        'log_file_path': log_file_path,
+        'status': 'completed'
+    }
+
+
+def process_manga_folder_recursive():
+    input_folder = input("请输入漫画根文件夹的路径: ").strip()
+    if not os.path.isdir(input_folder):
+        print(f"错误：文件夹 '{input_folder}' 不存在。")
+        return
+
+    script_directory = get_script_directory()
+    config_file_path_abs = os.path.join(script_directory, CONFIG_FILENAME) # config.ini 与脚本同级
+
+    cfg = load_or_get_config(config_file_path_abs, input_folder) # 传递绝对配置文件路径
+
+    process_images_with_config(cfg, config_file_path_abs=config_file_path_abs)
 
     return {
         'total_processed': total_processed_count,
