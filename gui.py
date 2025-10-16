@@ -7,6 +7,13 @@ from tkinter import ttk, filedialog, messagebox
 
 from PIL import Image, ImageTk
 
+if hasattr(Image, "Resampling"):
+    RESAMPLE_LANCZOS = Image.Resampling.LANCZOS
+    RESAMPLE_NEAREST = Image.Resampling.NEAREST
+else:  # pragma: no cover - Pillow < 9 fallback
+    RESAMPLE_LANCZOS = Image.LANCZOS
+    RESAMPLE_NEAREST = Image.NEAREST
+
 from run import (
     CONFIG_FILENAME,
     config_parser_to_dict,
@@ -38,8 +45,8 @@ class AutoComicRefinerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AutoComicRefiner 图形界面")
-        self.geometry("1280x760")
-        self.minsize(1100, 640)
+        self.geometry("1380x820")
+        self.minsize(1180, 680)
         self._script_dir = os.path.dirname(os.path.abspath(__file__))
         self._config_path = os.path.join(self._script_dir, CONFIG_FILENAME)
         self.config_parser = read_config_file(self._config_path)
@@ -56,6 +63,7 @@ class AutoComicRefinerApp(tk.Tk):
         self._thumbnail_default_bg = None
         self._thumbnail_default_active_bg = None
         self._current_preview_load_token = None
+        self._preview_max_size = (820, 1020)
         self._create_variables()
         self._build_ui()
         self._load_config_to_fields()
@@ -106,13 +114,13 @@ class AutoComicRefinerApp(tk.Tk):
 
         left_frame = ttk.Frame(main_paned, padding=20)
         left_frame.columnconfigure(0, weight=1)
-        main_paned.add(left_frame, weight=3)
+        main_paned.add(left_frame, weight=4)
 
         right_frame = ttk.Frame(main_paned, padding=20)
         right_frame.columnconfigure(0, weight=1)
         right_frame.rowconfigure(0, weight=3)
         right_frame.rowconfigure(1, weight=2)
-        main_paned.add(right_frame, weight=5)
+        main_paned.add(right_frame, weight=6)
 
         # 输入路径
         ttk.Label(left_frame, text="漫画根目录:").grid(row=0, column=0, sticky="w")
@@ -243,14 +251,26 @@ class AutoComicRefinerApp(tk.Tk):
         # 预览窗格
         preview_frame = ttk.LabelFrame(right_frame, text="目录预览", padding=15)
         preview_frame.grid(row=0, column=0, sticky="nsew")
-        preview_frame.columnconfigure(0, weight=3)
-        preview_frame.columnconfigure(1, weight=2)
+        preview_frame.columnconfigure(0, weight=5)
+        preview_frame.columnconfigure(1, weight=3)
         preview_frame.rowconfigure(0, weight=1)
         preview_frame.rowconfigure(2, weight=1)
-        self.preview_image_label = ttk.Label(preview_frame, anchor="center", width=42)
+        self.preview_image_label = tk.Label(
+            preview_frame,
+            anchor="center",
+            width=1,
+            background="#f5f5f5",
+            relief="sunken",
+            borderwidth=1,
+        )
         self.preview_image_label.grid(row=0, column=0, sticky="nsew")
         self.preview_info_var = tk.StringVar(value="")
-        self.preview_info_label = ttk.Label(preview_frame, textvariable=self.preview_info_var, justify="left", wraplength=420)
+        self.preview_info_label = ttk.Label(
+            preview_frame,
+            textvariable=self.preview_info_var,
+            justify="left",
+            wraplength=520,
+        )
         self.preview_info_label.grid(row=0, column=1, sticky="nsew", padx=(18, 0))
         nav_frame = ttk.Frame(preview_frame)
         nav_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -261,7 +281,7 @@ class AutoComicRefinerApp(tk.Tk):
         ttk.Label(nav_frame, textvariable=self.preview_index_var).grid(row=0, column=1, sticky="w", padx=(12, 0))
         self.next_button = ttk.Button(nav_frame, text="下一张", command=lambda: self._navigate_preview(1))
         self.next_button.grid(row=0, column=2, sticky="e")
-        self.thumbnail_canvas = tk.Canvas(preview_frame, height=130, highlightthickness=0)
+        self.thumbnail_canvas = tk.Canvas(preview_frame, height=150, highlightthickness=0)
         self.thumbnail_canvas.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         self.thumbnail_scrollbar = ttk.Scrollbar(preview_frame, orient='horizontal', command=self.thumbnail_canvas.xview)
         self.thumbnail_scrollbar.grid(row=3, column=0, columnspan=2, sticky="ew")
@@ -521,9 +541,9 @@ class AutoComicRefinerApp(tk.Tk):
             btn = tk.Button(
                 self.thumbnail_inner_frame,
                 text=os.path.basename(path),
-                width=14,
+                width=16,
                 height=6,
-                wraplength=100,
+                wraplength=120,
                 justify='center',
                 command=lambda i=idx: self._on_thumbnail_selected(i),
             )
@@ -551,7 +571,14 @@ class AutoComicRefinerApp(tk.Tk):
                     thumb_copy = None
 
                 if thumb_copy is not None:
-                    thumb_copy.thumbnail((96, 96))
+                    resample = RESAMPLE_LANCZOS
+                    if thumb_copy.mode in ('1', 'P'):
+                        if thumb_copy.mode == 'P':
+                            thumb_copy = thumb_copy.convert('RGB')
+                        else:
+                            thumb_copy = thumb_copy.convert('L')
+                        resample = RESAMPLE_NEAREST
+                    thumb_copy.thumbnail((120, 120), resample=resample)
                     photo = ImageTk.PhotoImage(thumb_copy)
                 else:
                     photo = None
@@ -591,7 +618,17 @@ class AutoComicRefinerApp(tk.Tk):
                 self.after(0, lambda exc=exc: self._handle_preview_error(load_token, exc))
                 return
 
-            display_img.thumbnail((360, 360))
+            resample = RESAMPLE_LANCZOS
+            if display_img.mode in ('1', 'P'):
+                if display_img.mode == 'P':
+                    if 'transparency' in display_img.info:
+                        display_img = display_img.convert('RGBA')
+                    else:
+                        display_img = display_img.convert('RGB')
+                else:
+                    display_img = display_img.convert('L')
+                resample = RESAMPLE_NEAREST
+            display_img.thumbnail(self._preview_max_size, resample=resample)
             photo = ImageTk.PhotoImage(display_img)
 
             def apply_preview():
