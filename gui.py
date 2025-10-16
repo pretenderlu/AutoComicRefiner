@@ -38,8 +38,8 @@ class AutoComicRefinerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("AutoComicRefiner 图形界面")
-        self.geometry("900x720")
-        self.minsize(880, 640)
+        self.geometry("1280x760")
+        self.minsize(1100, 640)
         self._script_dir = os.path.dirname(os.path.abspath(__file__))
         self._config_path = os.path.join(self._script_dir, CONFIG_FILENAME)
         self.config_parser = read_config_file(self._config_path)
@@ -99,21 +99,32 @@ class AutoComicRefinerApp(tk.Tk):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
-        main_frame = ttk.Frame(self, padding=20)
-        main_frame.grid(row=0, column=0, sticky="nsew")
-        main_frame.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        main_paned = ttk.Panedwindow(self, orient='horizontal')
+        main_paned.grid(row=0, column=0, sticky="nsew")
+
+        left_frame = ttk.Frame(main_paned, padding=20)
+        left_frame.columnconfigure(0, weight=1)
+        main_paned.add(left_frame, weight=3)
+
+        right_frame = ttk.Frame(main_paned, padding=20)
+        right_frame.columnconfigure(0, weight=1)
+        right_frame.rowconfigure(0, weight=3)
+        right_frame.rowconfigure(1, weight=2)
+        main_paned.add(right_frame, weight=5)
 
         # 输入路径
-        ttk.Label(main_frame, text="漫画根目录:").grid(row=0, column=0, sticky="w")
-        input_frame = ttk.Frame(main_frame)
-        input_frame.grid(row=0, column=1, sticky="ew", pady=5)
+        ttk.Label(left_frame, text="漫画根目录:").grid(row=0, column=0, sticky="w")
+        input_frame = ttk.Frame(left_frame)
+        input_frame.grid(row=1, column=0, sticky="ew", pady=(5, 10))
         input_frame.columnconfigure(0, weight=1)
         ttk.Entry(input_frame, textvariable=self.input_folder_var).grid(row=0, column=0, sticky="ew")
         ttk.Button(input_frame, text="浏览...", command=self._select_input_folder).grid(row=0, column=1, padx=(8, 0))
 
         # 设置面板
-        settings_labelframe = ttk.LabelFrame(main_frame, text="处理设置", padding=15)
-        settings_labelframe.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(15, 0))
+        settings_labelframe = ttk.LabelFrame(left_frame, text="处理设置", padding=15)
+        settings_labelframe.grid(row=2, column=0, sticky="nsew")
         for i in range(4):
             settings_labelframe.columnconfigure(i, weight=1)
 
@@ -205,8 +216,8 @@ class AutoComicRefinerApp(tk.Tk):
         ttk.Entry(settings_labelframe, textvariable=self.log_filename_var).grid(row=6, column=1, columnspan=3, sticky="ew", pady=(6, 0))
 
         # 文件名模板
-        template_labelframe = ttk.LabelFrame(main_frame, text="文件名模板", padding=15)
-        template_labelframe.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(15, 0))
+        template_labelframe = ttk.LabelFrame(left_frame, text="文件名模板", padding=15)
+        template_labelframe.grid(row=3, column=0, sticky="ew", pady=(15, 0))
         template_labelframe.columnconfigure(1, weight=1)
 
         ttk.Label(template_labelframe, text="单页模板").grid(row=0, column=0, sticky="w")
@@ -218,17 +229,29 @@ class AutoComicRefinerApp(tk.Tk):
         ttk.Label(template_labelframe, text="切割第二页模板").grid(row=2, column=0, sticky="w")
         ttk.Entry(template_labelframe, textvariable=self.template_split2_var).grid(row=2, column=1, sticky="ew", pady=5)
 
+        # 操作按钮
+        button_frame = ttk.Frame(left_frame)
+        button_frame.grid(row=4, column=0, sticky="ew", pady=(20, 0))
+        button_frame.columnconfigure(2, weight=1)
+        ttk.Button(button_frame, text="保存配置", command=self._save_config).grid(row=0, column=0, padx=(0, 10))
+        ttk.Button(button_frame, text="清空日志", command=self._clear_log).grid(row=0, column=1, padx=(0, 10))
+        self.start_button = ttk.Button(button_frame, text="开始处理", command=self._start_processing)
+        self.start_button.grid(row=0, column=2, sticky="e")
+
+        left_frame.rowconfigure(2, weight=1)
+
         # 预览窗格
-        preview_frame = ttk.LabelFrame(main_frame, text="目录预览", padding=15)
-        preview_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(15, 0))
-        preview_frame.columnconfigure(0, weight=0)
-        preview_frame.columnconfigure(1, weight=1)
+        preview_frame = ttk.LabelFrame(right_frame, text="目录预览", padding=15)
+        preview_frame.grid(row=0, column=0, sticky="nsew")
+        preview_frame.columnconfigure(0, weight=3)
+        preview_frame.columnconfigure(1, weight=2)
+        preview_frame.rowconfigure(0, weight=1)
         preview_frame.rowconfigure(2, weight=1)
-        self.preview_image_label = ttk.Label(preview_frame, anchor="center", width=36)
-        self.preview_image_label.grid(row=0, column=0, sticky="n")
+        self.preview_image_label = ttk.Label(preview_frame, anchor="center", width=42)
+        self.preview_image_label.grid(row=0, column=0, sticky="nsew")
         self.preview_info_var = tk.StringVar(value="")
-        self.preview_info_label = ttk.Label(preview_frame, textvariable=self.preview_info_var, justify="left", wraplength=360)
-        self.preview_info_label.grid(row=0, column=1, sticky="nw", padx=(18, 0))
+        self.preview_info_label = ttk.Label(preview_frame, textvariable=self.preview_info_var, justify="left", wraplength=420)
+        self.preview_info_label.grid(row=0, column=1, sticky="nsew", padx=(18, 0))
         nav_frame = ttk.Frame(preview_frame)
         nav_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         nav_frame.columnconfigure(1, weight=1)
@@ -250,18 +273,9 @@ class AutoComicRefinerApp(tk.Tk):
             lambda _event: self.thumbnail_canvas.configure(scrollregion=self.thumbnail_canvas.bbox('all')),
         )
 
-        # 操作按钮
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(15, 0))
-        button_frame.columnconfigure(2, weight=1)
-        ttk.Button(button_frame, text="保存配置", command=self._save_config).grid(row=0, column=0, padx=(0, 10))
-        ttk.Button(button_frame, text="清空日志", command=self._clear_log).grid(row=0, column=1, padx=(0, 10))
-        self.start_button = ttk.Button(button_frame, text="开始处理", command=self._start_processing)
-        self.start_button.grid(row=0, column=2, sticky="e")
-
         # 日志输出
-        log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding=10)
-        log_frame.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(15, 0))
+        log_frame = ttk.LabelFrame(right_frame, text="运行日志", padding=10)
+        log_frame.grid(row=1, column=0, sticky="nsew", pady=(18, 0))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log_text = tk.Text(log_frame, wrap='word', state='disabled', height=12)
