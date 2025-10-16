@@ -49,11 +49,12 @@ GUI 提供以下特性：
    ```powershell
    python build_exe.py
    ```
-   默认会生成单文件的 `dist/AutoComicRefiner.exe`。
+   默认会生成单文件的 `dist/AutoComicRefiner.exe`，并隐藏伴随的命令行窗口，方便桌面端使用。
 3. 如需使用 onedir 布局或自定义图标，可附加参数：
    ```powershell
    python build_exe.py --one-dir --icon path\to\icon.ico
    ```
+   若希望保留命令行窗口以便查看调试输出，可增加 `--console` 参数。
 
 打包脚本会自动把 `config.ini` 包含在内，首次运行时仍会在与可执行文件同级的目录写入/更新配置与日志。
 

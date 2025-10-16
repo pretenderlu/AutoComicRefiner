@@ -20,7 +20,7 @@ def _find_pyinstaller() -> Path | None:
     return None
 
 
-def build_executable(*, one_file: bool, icon: str | None) -> None:
+def build_executable(*, one_file: bool, icon: str | None, console: bool) -> None:
     """Invoke PyInstaller with sensible defaults for this project."""
     project_root = Path(__file__).resolve().parent
 
@@ -51,6 +51,11 @@ def build_executable(*, one_file: bool, icon: str | None) -> None:
             raise SystemExit(f"指定的图标文件不存在: {icon}")
         cmd.extend(["--icon", str(icon_path)])
 
+    if console:
+        cmd.append("--console")
+    else:
+        cmd.append("--noconsole")
+
     cmd.append("--onefile" if one_file else "--onedir")
     cmd.extend(add_data_arg)
 
@@ -78,12 +83,17 @@ def parse_args() -> argparse.Namespace:
         "--icon",
         help="可选的 ico 图标文件路径",
     )
+    parser.add_argument(
+        "--console",
+        action="store_true",
+        help="保留命令行窗口（默认隐藏）",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    build_executable(one_file=not args.one_dir, icon=args.icon)
+    build_executable(one_file=not args.one_dir, icon=args.icon, console=args.console)
 
 
 if __name__ == "__main__":
