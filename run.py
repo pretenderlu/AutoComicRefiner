@@ -3,7 +3,38 @@ from PIL import Image, UnidentifiedImageError
 import shutil
 import logging
 import configparser
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - graceful fallback when tqdm is absent
+    class _SimpleTqdm:  # minimal stand-in used only when tqdm isn't installed
+        def __init__(self, iterable=None, total=None, desc=None, unit=None, **kwargs):
+            self.iterable = iterable
+            self.total = total
+            self.desc = desc
+            self.unit = unit or ""
+            self.count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+
+        def __iter__(self):
+            if self.iterable is None:
+                return iter(())
+            for item in self.iterable:
+                yield item
+
+        def update(self, n=1):
+            self.count += n
+
+        def close(self):
+            if self.total is not None and self.desc:
+                print(f"{self.desc}完成: {self.count}/{self.total}{self.unit}")
+
+    tqdm = _SimpleTqdm
 import multiprocessing
 import time
 
@@ -17,6 +48,7 @@ DEFAULT_CONFIG = {
         'resize_mode': 'fixed_height',
         'output_format_for_others': 'jpeg', # 当源不是JPG/PNG时的默认输出格式
         'jpeg_quality': '90',
+        'enable_double_page_split': 'false',
         'split_order_is_left_to_right': 'true',
         'overwrite_existing_output_folders': 'false', # 此选项现在作用于 input_root/new/mirrored_subfolder/
         'dry_run': 'false',
@@ -35,47 +67,86 @@ current_config_to_save = configparser.ConfigParser()
 NEW_ROOT_OUTPUT_SUBFOLDER_NAME = "new" # 新的总输出根目录的子文件夹名 (相对于input_folder)
 CONFIG_FILENAME = "config.ini" # 配置文件名
 
+
+def initialize_config_parser():
+    """创建包含默认值的配置解析器。"""
+    parser = configparser.ConfigParser()
+    for section, options in DEFAULT_CONFIG.items():
+        if not parser.has_section(section):
+            parser.add_section(section)
+        for key, value in options.items():
+            parser.set(section, key, value)
+    return parser
+
+
+def read_config_file(config_file_path_abs):
+    """读取配置文件并在缺失时应用默认值。"""
+    parser = initialize_config_parser()
+    if os.path.exists(config_file_path_abs):
+        parser.read(config_file_path_abs, encoding='utf-8')
+    return parser
+
+
+def save_config_parser(parser, config_file_path_abs):
+    """将配置写入指定路径。"""
+    with open(config_file_path_abs, 'w', encoding='utf-8') as configfile:
+        parser.write(configfile)
+
+
+def config_parser_to_dict(config_parser, input_folder_root):
+    """将 ConfigParser 配置转换为处理流程使用的字典。"""
+    settings_proxy = config_parser['Settings']
+    filenames_cfg_proxy = config_parser['Filenames']
+    return {
+        'input_folder_root': input_folder_root,
+        'is_dry_run': settings_proxy.getboolean('dry_run'),
+        'log_filename': settings_proxy.get('log_filename'),
+        'num_processes': settings_proxy.getint('num_processes'),
+        'resize_mode': settings_proxy.get('resize_mode'),
+        'target_height': settings_proxy.getint('target_height'),
+        'target_width': settings_proxy.getint('target_width'),
+        'max_height': settings_proxy.getint('max_height'),
+        'max_width': settings_proxy.getint('max_width'),
+        'output_format_for_others': settings_proxy.get('output_format_for_others'),
+        'jpeg_quality': settings_proxy.getint('jpeg_quality'),
+        'enable_double_page_split': settings_proxy.getboolean('enable_double_page_split'),
+        'split_left_to_right': settings_proxy.getboolean('split_order_is_left_to_right'),
+        'overwrite_existing': settings_proxy.getboolean('overwrite_existing_output_folders'),
+        'template_single': filenames_cfg_proxy.get('template_single'),
+        'template_split_page1': filenames_cfg_proxy.get('template_split_page1'),
+        'template_split_page2': filenames_cfg_proxy.get('template_split_page2')
+    }
+
 def get_script_directory():
     """获取当前运行脚本所在的目录"""
     # __file__ 是当前文件的路径。os.path.abspath确保我们得到绝对路径。
     # os.path.dirname获取该路径的目录部分。
     return os.path.dirname(os.path.abspath(__file__))
 
-def setup_logging(log_path, is_dry_run):
+def setup_logging(log_path, is_dry_run, *, additional_handlers=None, include_console=True):
     """配置日志记录器"""
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
-    
+
     log_mode = 'w'
+    handlers = [logging.FileHandler(log_path, mode=log_mode, encoding='utf-8')]
+    if include_console:
+        handlers.append(logging.StreamHandler())
+    if additional_handlers:
+        handlers.extend(additional_handlers)
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(processName)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_path, mode=log_mode, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
+        handlers=handlers
     )
 
 def load_or_get_config(config_file_path_abs, input_folder_root_path): # config_file_path_abs 是绝对路径
     """加载配置，如果不存在或不完整则提示用户并使用默认值"""
     global current_config_to_save
-    current_config_to_save = configparser.ConfigParser() 
-
-    for section, options in DEFAULT_CONFIG.items():
-        if not current_config_to_save.has_section(section):
-            current_config_to_save.add_section(section)
-        for key, value in options.items():
-            if not current_config_to_save.has_option(section, key):
-                 current_config_to_save.set(section, key, value)
+    current_config_to_save = read_config_file(config_file_path_abs)
 
     if os.path.exists(config_file_path_abs):
-        file_config = configparser.ConfigParser()
-        file_config.read(config_file_path_abs, encoding='utf-8')
-        for section in file_config.sections():
-            if not current_config_to_save.has_section(section):
-                current_config_to_save.add_section(section)
-            for key, value in file_config.items(section):
-                current_config_to_save.set(section, key, value) 
         print(f"已从 '{config_file_path_abs}' 加载配置。")
     else:
         print(f"配置文件 '{config_file_path_abs}' 未找到，将使用默认设置并提示。")
@@ -170,10 +241,19 @@ def load_or_get_config(config_file_path_abs, input_folder_root_path): # config_f
             except ValueError: print(f"无效JPEG质量，使用当前值: {jpeg_quality}")
     settings_proxy['jpeg_quality'] = str(jpeg_quality)
 
+    default_enable_split = DEFAULT_CONFIG['Settings']['enable_double_page_split'].lower() == 'true'
+    enable_split = settings_proxy.getboolean('enable_double_page_split', fallback=default_enable_split)
+    enable_choice = input(f"是否启用双页切割? (y/n) (当前: {'y' if enable_split else 'n'}): ").lower().strip()
+    if enable_choice in ['y', 'n']:
+        enable_split = (enable_choice == 'y')
+    settings_proxy['enable_double_page_split'] = str(enable_split).lower()
+
     default_split_left_to_right = DEFAULT_CONFIG['Settings']['split_order_is_left_to_right'].lower() == 'true'
     split_left_to_right = settings_proxy.getboolean('split_order_is_left_to_right', fallback=default_split_left_to_right)
-    order_choice = input(f"切割顺序 (1: 左到右, 2: 右到左) (当前: {'1' if split_left_to_right else '2'}): ").strip()
-    if order_choice in ['1', '2']: split_left_to_right = (order_choice == '1')
+    if enable_split:
+        order_choice = input(f"切割顺序 (1: 左到右, 2: 右到左) (当前: {'1' if split_left_to_right else '2'}): ").strip()
+        if order_choice in ['1', '2']:
+            split_left_to_right = (order_choice == '1')
     settings_proxy['split_order_is_left_to_right'] = str(split_left_to_right).lower()
 
     default_overwrite_existing = DEFAULT_CONFIG['Settings']['overwrite_existing_output_folders'].lower() == 'true'
@@ -206,25 +286,12 @@ def load_or_get_config(config_file_path_abs, input_folder_root_path): # config_f
     save_conf_choice = input(f"是否将当前设置保存到 '{config_file_path_abs}' (与脚本同目录)? (y/n): ").lower().strip()
     if save_conf_choice == 'y':
         try:
-            with open(config_file_path_abs, 'w', encoding='utf-8') as configfile:
-                current_config_to_save.write(configfile)
+            save_config_parser(current_config_to_save, config_file_path_abs)
             print(f"配置已保存到 '{config_file_path_abs}'。")
         except IOError:
             print(f"错误：无法保存配置文件到 '{config_file_path_abs}'。请检查脚本目录的写入权限。")
 
-    return {
-        'input_folder_root': input_folder_root_path,
-        'is_dry_run': is_dry_run, 'log_filename': log_filename,
-        'num_processes': num_processes,
-        'resize_mode': resize_mode, 'target_height': target_height,
-        'target_width': target_width, 'max_height': max_height, 'max_width': max_width,
-        'output_format_for_others': output_format_for_others,
-        'jpeg_quality': jpeg_quality, 'split_left_to_right': split_left_to_right,
-        'overwrite_existing': overwrite_existing,
-        'template_single': template_single,
-        'template_split_page1': template_split_page1,
-        'template_split_page2': template_split_page2
-    }
+    return config_parser_to_dict(current_config_to_save, input_folder_root_path)
 
 def get_dynamic_output_format_and_ext(original_ext_lower, config):
     if original_ext_lower in ['.jpg', '.jpeg']: return 'JPEG', '.jpg'
@@ -282,8 +349,9 @@ def check_if_already_processed(img_path, cfg):
     original_ext_lower = original_ext_str.lower()
     _, final_output_ext = get_dynamic_output_format_and_ext(original_ext_lower, cfg)
 
+    is_split_candidate = False
     try:
-        with Image.open(img_path) as temp_img: 
+        with Image.open(img_path) as temp_img:
             temp_img.load()
             original_width, original_height = temp_img.size
             sim_width, sim_height = original_width, original_height
@@ -300,7 +368,7 @@ def check_if_already_processed(img_path, cfg):
     except (UnidentifiedImageError, FileNotFoundError, Exception): return False
 
     expected_outputs = []
-    if is_split_candidate:
+    if cfg['enable_double_page_split'] and is_split_candidate:
         page1_savename = cfg['template_split_page1'].format(base=base, ext=final_output_ext, page_num=1)
         page2_savename = cfg['template_split_page2'].format(base=base, ext=final_output_ext, page_num=2)
         expected_outputs.extend([os.path.join(mirrored_target_dir, page1_savename), os.path.join(mirrored_target_dir, page2_savename)])
@@ -349,7 +417,7 @@ def worker_process_image(img_path, config):
         save_options = {}
         if final_save_format == 'JPEG': save_options['quality'] = config['jpeg_quality']
 
-        if current_height > 0 and current_width > current_height: # Split
+        if config['enable_double_page_split'] and current_height > 0 and current_width > current_height: # Split
             is_split_action = True; midpoint = current_width // 2
             page_left_data = resized_img.crop((0, 0, midpoint, current_height))
             page_right_data = resized_img.crop((midpoint, 0, current_width, current_height))
@@ -377,6 +445,159 @@ def worker_process_image(img_path, config):
     except UnidentifiedImageError: return "error", f"无法识别图片格式: {filename}", filename, False
     except Exception as e: return "error", f"处理 '{filename}' 错误: {str(e)}", filename, False
 
+def process_images_with_config(cfg, config_file_path_abs=None, *, additional_log_handlers=None, include_console_log=True):
+    input_folder = cfg['input_folder_root']
+    log_file_path = os.path.join(input_folder, cfg['log_filename'])
+    setup_logging(log_file_path, cfg['is_dry_run'], additional_handlers=additional_log_handlers, include_console=include_console_log)
+
+    logging.info("--- 开始处理 ---")
+    if config_file_path_abs:
+        logging.info(f"配置文件: {config_file_path_abs}")
+    logging.info(f"输出镜像根目录: {os.path.join(input_folder, NEW_ROOT_OUTPUT_SUBFOLDER_NAME)}")
+
+    supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp')
+    logging.info("步骤1: 扫描所有图片文件...")
+    all_image_paths_discovered = get_all_image_files(input_folder, supported_formats, cfg['log_filename'])
+    if not all_image_paths_discovered:
+        logging.info("未找到支持的图片文件。")
+        logging.info("--- 处理结束 ---")
+        return {
+            'total_processed': 0,
+            'total_split': 0,
+            'skipped_due_to_cache': 0,
+            'total_errors': 0,
+            'total_discovered': 0,
+            'total_to_process': 0,
+            'log_file_path': log_file_path,
+            'status': 'no_images'
+        }
+    logging.info(f"共发现 {len(all_image_paths_discovered)} 张潜在图片。")
+
+    base_new_output_dir_root = os.path.join(input_folder, NEW_ROOT_OUTPUT_SUBFOLDER_NAME)
+
+    if not cfg['is_dry_run'] and not os.path.exists(base_new_output_dir_root):
+        try:
+            os.makedirs(base_new_output_dir_root)
+            logging.info(f"已创建总输出根目录: {base_new_output_dir_root}")
+        except OSError as e:
+            logging.error(f"错误：无法创建总输出根目录 '{base_new_output_dir_root}': {e}。处理中止。")
+            return {
+                'total_processed': 0,
+                'total_split': 0,
+                'skipped_due_to_cache': 0,
+                'total_errors': 1,
+                'total_discovered': len(all_image_paths_discovered),
+                'total_to_process': 0,
+                'log_file_path': log_file_path,
+                'status': 'failed'
+            }
+    elif cfg['is_dry_run'] and not os.path.exists(base_new_output_dir_root):
+        logging.info(f"[试运行] 将创建总输出根目录: {base_new_output_dir_root}")
+
+    logging.info("步骤2: 准备镜像输出目录结构并筛选待处理图片...")
+    tasks_to_process = []
+    unique_original_parent_dirs = sorted(list(set(os.path.dirname(p) for p in all_image_paths_discovered)))
+
+    for original_parent_dir in unique_original_parent_dirs:
+        mirrored_target_dir = calculate_target_output_dir(os.path.join(original_parent_dir, "dummy.file"), cfg)
+
+        if cfg['is_dry_run']:
+            if not os.path.exists(mirrored_target_dir):
+                logging.info(f"[试运行] 将创建镜像目标文件夹: {mirrored_target_dir}")
+            elif cfg['overwrite_existing']:
+                logging.info(f"[试运行] 镜像目标文件夹 '{mirrored_target_dir}' 中的内容将被覆盖。")
+        else:
+            if os.path.exists(mirrored_target_dir):
+                if cfg['overwrite_existing']:
+                    logging.info(f"镜像目标文件夹 '{mirrored_target_dir}' 已存在，将清空。")
+                    try:
+                        shutil.rmtree(mirrored_target_dir)
+                        os.makedirs(mirrored_target_dir)
+                    except OSError as e:
+                        logging.error(f"错误：无法清空/创建镜像目标文件夹 '{mirrored_target_dir}': {e}。")
+                        all_image_paths_discovered = [p for p in all_image_paths_discovered if os.path.dirname(p) != original_parent_dir]
+                        continue
+            else:
+                try:
+                    os.makedirs(mirrored_target_dir, exist_ok=True)
+                except OSError as e:
+                    logging.error(f"错误：无法创建镜像目标文件夹 '{mirrored_target_dir}': {e}。")
+                    all_image_paths_discovered = [p for p in all_image_paths_discovered if os.path.dirname(p) != original_parent_dir]
+                    continue
+
+    skipped_due_to_cache = 0
+    for img_path in all_image_paths_discovered:
+        mirrored_target_dir = calculate_target_output_dir(img_path, cfg)
+        if not cfg['is_dry_run'] and not os.path.isdir(mirrored_target_dir):
+            continue
+        if not cfg['overwrite_existing'] and check_if_already_processed(img_path, cfg):
+            skipped_due_to_cache += 1
+            continue
+        tasks_to_process.append((img_path, cfg))
+
+    if skipped_due_to_cache > 0:
+        logging.info(f"智能跳过: {skipped_due_to_cache} 个文件因已处理且最新而被跳过。")
+    if not tasks_to_process:
+        logging.info("没有需要处理的图片任务。")
+        logging.info("--- 处理结束 ---")
+        return {
+            'total_processed': 0,
+            'total_split': 0,
+            'skipped_due_to_cache': skipped_due_to_cache,
+            'total_errors': 0,
+            'total_discovered': len(all_image_paths_discovered),
+            'total_to_process': 0,
+            'log_file_path': log_file_path,
+            'status': 'nothing_to_do'
+        }
+
+    logging.info(f"步骤3: 开始并行处理 {len(tasks_to_process)} 张图片...")
+    total_processed_count = 0
+    total_split_count = 0
+    total_errors = 0
+    try:
+        with multiprocessing.Pool(processes=cfg['num_processes']) as pool:
+            results = []
+            with tqdm(total=len(tasks_to_process), desc="图片处理进度", unit="张") as pbar:
+                for result in pool.imap_unordered(worker_process_image_wrapper, tasks_to_process):
+                    results.append(result)
+                    pbar.update(1)
+        for status, message, _, is_split in results:
+            if status == "success":
+                total_processed_count += 1
+                if is_split:
+                    total_split_count += 1
+                logging.info(message)
+            elif status == "error":
+                total_errors += 1
+                logging.error(message)
+    except Exception as e:
+        logging.critical(f"多进程处理中发生严重错误: {e}", exc_info=True)
+        total_errors = len(tasks_to_process)
+
+    logging.info("\n--- 处理结束 ---")
+    if cfg['is_dry_run']:
+        logging.info("“试运行”模式结束。")
+    logging.info(f"总共成功处理了 {total_processed_count} 张图片。")
+    logging.info(f"其中 {total_split_count} 张图片被切割。")
+    if skipped_due_to_cache > 0 and not cfg['overwrite_existing']:
+        logging.info(f"{skipped_due_to_cache} 张图片因已处理且最新而被跳过。")
+    if total_errors > 0:
+        logging.warning(f"处理中发生 {total_errors} 个错误。请检查日志。")
+    logging.info(f"详细日志已保存到: {log_file_path}")
+
+    return {
+        'total_processed': total_processed_count,
+        'total_split': total_split_count,
+        'skipped_due_to_cache': skipped_due_to_cache,
+        'total_errors': total_errors,
+        'total_discovered': len(all_image_paths_discovered),
+        'total_to_process': len(tasks_to_process),
+        'log_file_path': log_file_path,
+        'status': 'completed'
+    }
+
+
 def process_manga_folder_recursive():
     input_folder = input("请输入漫画根文件夹的路径: ").strip()
     if not os.path.isdir(input_folder):
@@ -388,91 +609,7 @@ def process_manga_folder_recursive():
 
     cfg = load_or_get_config(config_file_path_abs, input_folder) # 传递绝对配置文件路径
 
-    log_file_path = os.path.join(input_folder, cfg['log_filename']) # 日志仍在输入根目录
-    setup_logging(log_file_path, cfg['is_dry_run'])
-
-    logging.info(f"--- 开始处理 (配置文件: {config_file_path_abs}) ---")
-    logging.info(f"--- (输出到 '{os.path.join(input_folder, NEW_ROOT_OUTPUT_SUBFOLDER_NAME)}' 下的镜像结构) ---")
-
-    supported_formats = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp')
-    logging.info("步骤1: 扫描所有图片文件...")
-    all_image_paths_discovered = get_all_image_files(input_folder, supported_formats, cfg['log_filename'])
-    if not all_image_paths_discovered:
-        logging.info("未找到支持的图片文件。"); logging.info("--- 处理结束 ---"); return
-    logging.info(f"共发现 {len(all_image_paths_discovered)} 张潜在图片。")
-
-    base_new_output_dir_root = os.path.join(input_folder, NEW_ROOT_OUTPUT_SUBFOLDER_NAME)
-    
-    if not cfg['is_dry_run'] and not os.path.exists(base_new_output_dir_root):
-        try: os.makedirs(base_new_output_dir_root); logging.info(f"已创建总输出根目录: {base_new_output_dir_root}")
-        except OSError as e: logging.error(f"错误：无法创建总输出根目录 '{base_new_output_dir_root}': {e}。处理中止。"); return
-    elif cfg['is_dry_run'] and not os.path.exists(base_new_output_dir_root):
-        logging.info(f"[试运行] 将创建总输出根目录: {base_new_output_dir_root}")
-
-    logging.info("步骤2: 准备镜像输出目录结构并筛选待处理图片...")
-    tasks_to_process = []
-    unique_original_parent_dirs = sorted(list(set(os.path.dirname(p) for p in all_image_paths_discovered)))
-    
-    for original_parent_dir in unique_original_parent_dirs:
-        mirrored_target_dir = calculate_target_output_dir(os.path.join(original_parent_dir, "dummy.file"), cfg)
-
-        if cfg['is_dry_run']:
-            if not os.path.exists(mirrored_target_dir): logging.info(f"[试运行] 将创建镜像目标文件夹: {mirrored_target_dir}")
-            elif cfg['overwrite_existing']: logging.info(f"[试运行] 镜像目标文件夹 '{mirrored_target_dir}' 中的内容将被覆盖。")
-        else: 
-            if os.path.exists(mirrored_target_dir):
-                if cfg['overwrite_existing']:
-                    logging.info(f"镜像目标文件夹 '{mirrored_target_dir}' 已存在，将清空。")
-                    try: shutil.rmtree(mirrored_target_dir); os.makedirs(mirrored_target_dir)
-                    except OSError as e:
-                        logging.error(f"错误：无法清空/创建镜像目标文件夹 '{mirrored_target_dir}': {e}。")
-                        all_image_paths_discovered = [p for p in all_image_paths_discovered if os.path.dirname(p) != original_parent_dir]
-                        continue 
-            else: 
-                try: os.makedirs(mirrored_target_dir, exist_ok=True)
-                except OSError as e:
-                    logging.error(f"错误：无法创建镜像目标文件夹 '{mirrored_target_dir}': {e}。")
-                    all_image_paths_discovered = [p for p in all_image_paths_discovered if os.path.dirname(p) != original_parent_dir]
-                    continue
-
-    skipped_due_to_cache = 0
-    for img_path in all_image_paths_discovered:
-        mirrored_target_dir = calculate_target_output_dir(img_path, cfg)
-        if not cfg['is_dry_run'] and not os.path.isdir(mirrored_target_dir): continue
-        if not cfg['overwrite_existing'] and check_if_already_processed(img_path, cfg):
-            skipped_due_to_cache +=1; continue
-        tasks_to_process.append((img_path, cfg))
-
-    if skipped_due_to_cache > 0: logging.info(f"智能跳过: {skipped_due_to_cache} 个文件因已处理且最新而被跳过。")
-    if not tasks_to_process: logging.info("没有需要处理的图片任务。"); logging.info("--- 处理结束 ---"); return
-    
-    logging.info(f"步骤3: 开始并行处理 {len(tasks_to_process)} 张图片...")
-    total_processed_count = 0; total_split_count = 0; total_errors = 0
-    try:
-        with multiprocessing.Pool(processes=cfg['num_processes']) as pool:
-            results = []
-            with tqdm(total=len(tasks_to_process), desc="图片处理进度", unit="张") as pbar:
-                for result in pool.imap_unordered(worker_process_image_wrapper, tasks_to_process):
-                    results.append(result); pbar.update(1)
-        for status, message, _, is_split in results: 
-            if status == "success": 
-                total_processed_count += 1
-                if is_split: total_split_count += 1
-                logging.info(message) 
-            elif status == "error": 
-                total_errors += 1
-                logging.error(message) 
-    except Exception as e: 
-        logging.critical(f"多进程处理中发生严重错误: {e}", exc_info=True)
-        total_errors = len(tasks_to_process) 
-
-    logging.info(f"\n--- 处理结束 ---")
-    if cfg['is_dry_run']: logging.info("“试运行”模式结束。")
-    logging.info(f"总共成功处理了 {total_processed_count} 张图片。")
-    logging.info(f"其中 {total_split_count} 张图片被切割。")
-    if skipped_due_to_cache > 0 and not cfg['overwrite_existing']: logging.info(f"{skipped_due_to_cache} 张图片因已处理且最新而被跳过。")
-    if total_errors > 0: logging.warning(f"处理中发生 {total_errors} 个错误。请检查日志。")
-    logging.info(f"详细日志已保存到: {log_file_path}")
+    process_images_with_config(cfg, config_file_path_abs=config_file_path_abs)
 
 def worker_process_image_wrapper(args): return worker_process_image(*args)
 
