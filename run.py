@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
         'resize_mode': 'fixed_height',
         'output_format_for_others': 'jpeg', # 当源不是JPG/PNG时的默认输出格式
         'jpeg_quality': '90',
+        'enable_double_page_split': 'false',
         'split_order_is_left_to_right': 'true',
         'overwrite_existing_output_folders': 'false', # 此选项现在作用于 input_root/new/mirrored_subfolder/
         'dry_run': 'false',
@@ -108,6 +109,7 @@ def config_parser_to_dict(config_parser, input_folder_root):
         'max_width': settings_proxy.getint('max_width'),
         'output_format_for_others': settings_proxy.get('output_format_for_others'),
         'jpeg_quality': settings_proxy.getint('jpeg_quality'),
+        'enable_double_page_split': settings_proxy.getboolean('enable_double_page_split'),
         'split_left_to_right': settings_proxy.getboolean('split_order_is_left_to_right'),
         'overwrite_existing': settings_proxy.getboolean('overwrite_existing_output_folders'),
         'template_single': filenames_cfg_proxy.get('template_single'),
@@ -239,10 +241,19 @@ def load_or_get_config(config_file_path_abs, input_folder_root_path): # config_f
             except ValueError: print(f"无效JPEG质量，使用当前值: {jpeg_quality}")
     settings_proxy['jpeg_quality'] = str(jpeg_quality)
 
+    default_enable_split = DEFAULT_CONFIG['Settings']['enable_double_page_split'].lower() == 'true'
+    enable_split = settings_proxy.getboolean('enable_double_page_split', fallback=default_enable_split)
+    enable_choice = input(f"是否启用双页切割? (y/n) (当前: {'y' if enable_split else 'n'}): ").lower().strip()
+    if enable_choice in ['y', 'n']:
+        enable_split = (enable_choice == 'y')
+    settings_proxy['enable_double_page_split'] = str(enable_split).lower()
+
     default_split_left_to_right = DEFAULT_CONFIG['Settings']['split_order_is_left_to_right'].lower() == 'true'
     split_left_to_right = settings_proxy.getboolean('split_order_is_left_to_right', fallback=default_split_left_to_right)
-    order_choice = input(f"切割顺序 (1: 左到右, 2: 右到左) (当前: {'1' if split_left_to_right else '2'}): ").strip()
-    if order_choice in ['1', '2']: split_left_to_right = (order_choice == '1')
+    if enable_split:
+        order_choice = input(f"切割顺序 (1: 左到右, 2: 右到左) (当前: {'1' if split_left_to_right else '2'}): ").strip()
+        if order_choice in ['1', '2']:
+            split_left_to_right = (order_choice == '1')
     settings_proxy['split_order_is_left_to_right'] = str(split_left_to_right).lower()
 
     default_overwrite_existing = DEFAULT_CONFIG['Settings']['overwrite_existing_output_folders'].lower() == 'true'
@@ -338,8 +349,9 @@ def check_if_already_processed(img_path, cfg):
     original_ext_lower = original_ext_str.lower()
     _, final_output_ext = get_dynamic_output_format_and_ext(original_ext_lower, cfg)
 
+    is_split_candidate = False
     try:
-        with Image.open(img_path) as temp_img: 
+        with Image.open(img_path) as temp_img:
             temp_img.load()
             original_width, original_height = temp_img.size
             sim_width, sim_height = original_width, original_height
@@ -356,7 +368,7 @@ def check_if_already_processed(img_path, cfg):
     except (UnidentifiedImageError, FileNotFoundError, Exception): return False
 
     expected_outputs = []
-    if is_split_candidate:
+    if cfg['enable_double_page_split'] and is_split_candidate:
         page1_savename = cfg['template_split_page1'].format(base=base, ext=final_output_ext, page_num=1)
         page2_savename = cfg['template_split_page2'].format(base=base, ext=final_output_ext, page_num=2)
         expected_outputs.extend([os.path.join(mirrored_target_dir, page1_savename), os.path.join(mirrored_target_dir, page2_savename)])
@@ -405,7 +417,7 @@ def worker_process_image(img_path, config):
         save_options = {}
         if final_save_format == 'JPEG': save_options['quality'] = config['jpeg_quality']
 
-        if current_height > 0 and current_width > current_height: # Split
+        if config['enable_double_page_split'] and current_height > 0 and current_width > current_height: # Split
             is_split_action = True; midpoint = current_width // 2
             page_left_data = resized_img.crop((0, 0, midpoint, current_height))
             page_right_data = resized_img.crop((midpoint, 0, current_width, current_height))

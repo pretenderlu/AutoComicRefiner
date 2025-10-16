@@ -48,6 +48,14 @@ class AutoComicRefinerApp(tk.Tk):
         self._preview_request_id = 0
         self._preview_image_tk = None
         self._preview_job = None
+        self._preview_image_paths = []
+        self._preview_current_index = None
+        self._preview_folder = ''
+        self._thumbnail_photo_images = []
+        self._thumbnail_buttons = []
+        self._thumbnail_default_bg = None
+        self._thumbnail_default_active_bg = None
+        self._current_preview_load_token = None
         self._create_variables()
         self._build_ui()
         self._load_config_to_fields()
@@ -59,6 +67,9 @@ class AutoComicRefinerApp(tk.Tk):
         self._apply_dimension_mode(self.target_height_mode_var, self.target_height_entry, self.target_height_var, 'target_height')
         self._apply_dimension_mode(self.target_width_mode_var, self.target_width_entry, self.target_width_var, 'target_width')
         self._set_preview_message("请选择目录以查看预览。")
+        self._sync_split_controls_state()
+        self.bind('<Left>', lambda event: self._navigate_preview(-1))
+        self.bind('<Right>', lambda event: self._navigate_preview(1))
 
     def _create_variables(self):
         self.input_folder_var = tk.StringVar()
@@ -77,6 +88,7 @@ class AutoComicRefinerApp(tk.Tk):
         self.max_width_var = tk.StringVar(value=settings.get('max_width'))
         self.output_format_var = tk.StringVar(value=settings.get('output_format_for_others'))
         self.jpeg_quality_var = tk.StringVar(value=settings.get('jpeg_quality'))
+        self.enable_split_var = tk.BooleanVar(value=settings.getboolean('enable_double_page_split'))
         self.split_left_to_right_var = tk.BooleanVar(value=settings.getboolean('split_order_is_left_to_right'))
         self.overwrite_existing_var = tk.BooleanVar(value=settings.getboolean('overwrite_existing_output_folders'))
         self.template_single_var = tk.StringVar(value=filenames.get('template_single'))
@@ -178,8 +190,16 @@ class AutoComicRefinerApp(tk.Tk):
 
         ttk.Label(settings_labelframe, text="并行进程数").grid(row=5, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(settings_labelframe, textvariable=self.num_processes_var).grid(row=5, column=1, sticky="ew", pady=(6, 0))
-
-        ttk.Checkbutton(settings_labelframe, text="双页切割顺序: 左→右", variable=self.split_left_to_right_var).grid(row=5, column=2, sticky="w", pady=(6, 0))
+        split_frame = ttk.Frame(settings_labelframe)
+        split_frame.grid(row=5, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        self.enable_split_check = ttk.Checkbutton(split_frame, text="启用双页切割", variable=self.enable_split_var, command=self._sync_split_controls_state)
+        self.enable_split_check.grid(row=0, column=0, sticky="w")
+        self.split_order_frame = ttk.Frame(split_frame)
+        self.split_order_frame.grid(row=0, column=1, padx=(12, 0))
+        self.split_order_ltr = ttk.Radiobutton(self.split_order_frame, text="从左向右", variable=self.split_left_to_right_var, value=True)
+        self.split_order_ltr.grid(row=0, column=0, sticky="w")
+        self.split_order_rtl = ttk.Radiobutton(self.split_order_frame, text="从右向左", variable=self.split_left_to_right_var, value=False)
+        self.split_order_rtl.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
         ttk.Label(settings_labelframe, text="日志文件名").grid(row=6, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(settings_labelframe, textvariable=self.log_filename_var).grid(row=6, column=1, columnspan=3, sticky="ew", pady=(6, 0))
@@ -203,11 +223,32 @@ class AutoComicRefinerApp(tk.Tk):
         preview_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(15, 0))
         preview_frame.columnconfigure(0, weight=0)
         preview_frame.columnconfigure(1, weight=1)
+        preview_frame.rowconfigure(2, weight=1)
         self.preview_image_label = ttk.Label(preview_frame, anchor="center", width=36)
         self.preview_image_label.grid(row=0, column=0, sticky="n")
         self.preview_info_var = tk.StringVar(value="")
         self.preview_info_label = ttk.Label(preview_frame, textvariable=self.preview_info_var, justify="left", wraplength=360)
         self.preview_info_label.grid(row=0, column=1, sticky="nw", padx=(18, 0))
+        nav_frame = ttk.Frame(preview_frame)
+        nav_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        nav_frame.columnconfigure(1, weight=1)
+        self.prev_button = ttk.Button(nav_frame, text="上一张", command=lambda: self._navigate_preview(-1))
+        self.prev_button.grid(row=0, column=0, sticky="w")
+        self.preview_index_var = tk.StringVar(value="未加载")
+        ttk.Label(nav_frame, textvariable=self.preview_index_var).grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self.next_button = ttk.Button(nav_frame, text="下一张", command=lambda: self._navigate_preview(1))
+        self.next_button.grid(row=0, column=2, sticky="e")
+        self.thumbnail_canvas = tk.Canvas(preview_frame, height=130, highlightthickness=0)
+        self.thumbnail_canvas.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        self.thumbnail_scrollbar = ttk.Scrollbar(preview_frame, orient='horizontal', command=self.thumbnail_canvas.xview)
+        self.thumbnail_scrollbar.grid(row=3, column=0, columnspan=2, sticky="ew")
+        self.thumbnail_canvas.configure(xscrollcommand=self.thumbnail_scrollbar.set)
+        self.thumbnail_inner_frame = ttk.Frame(self.thumbnail_canvas)
+        self.thumbnail_canvas_window = self.thumbnail_canvas.create_window((0, 0), window=self.thumbnail_inner_frame, anchor='nw')
+        self.thumbnail_inner_frame.bind(
+            '<Configure>',
+            lambda _event: self.thumbnail_canvas.configure(scrollregion=self.thumbnail_canvas.bbox('all')),
+        )
 
         # 操作按钮
         button_frame = ttk.Frame(main_frame)
@@ -271,6 +312,16 @@ class AutoComicRefinerApp(tk.Tk):
                 restore_val = self._last_custom_dimensions.get(key, '')
                 value_var.set(restore_val)
 
+    def _sync_split_controls_state(self):
+        if not hasattr(self, 'split_order_ltr'):
+            return
+        if self.enable_split_var.get():
+            self.split_order_ltr.state(['!disabled'])
+            self.split_order_rtl.state(['!disabled'])
+        else:
+            self.split_order_ltr.state(['disabled'])
+            self.split_order_rtl.state(['disabled'])
+
     def _update_parser_from_fields(self):
         try:
             num_processes = int(self.num_processes_var.get())
@@ -317,6 +368,7 @@ class AutoComicRefinerApp(tk.Tk):
         self.config_parser['Settings']['resize_mode'] = self.resize_mode_var.get()
         self.config_parser['Settings']['dry_run'] = 'true' if self.dry_run_var.get() else 'false'
         self.config_parser['Settings']['output_format_for_others'] = self.output_format_var.get()
+        self.config_parser['Settings']['enable_double_page_split'] = 'true' if self.enable_split_var.get() else 'false'
         self.config_parser['Settings']['split_order_is_left_to_right'] = 'true' if self.split_left_to_right_var.get() else 'false'
         self.config_parser['Settings']['overwrite_existing_output_folders'] = 'true' if self.overwrite_existing_var.get() else 'false'
 
@@ -402,55 +454,209 @@ class AutoComicRefinerApp(tk.Tk):
         self.resize_description_label.configure(text=desc)
 
     def _set_preview_message(self, message):
+        self._preview_image_tk = None
         self.preview_image_label.configure(image='', text="暂无预览")
         self.preview_info_var.set(message)
-        self._preview_image_tk = None
+        self.preview_index_var.set(message)
+        self._preview_image_paths = []
+        self._preview_current_index = None
+        self._preview_folder = ''
+        self._thumbnail_photo_images = []
+        self._thumbnail_buttons = []
+        self._thumbnail_default_bg = None
+        self._thumbnail_default_active_bg = None
+        for child in self.thumbnail_inner_frame.winfo_children():
+            child.destroy()
+        self.thumbnail_canvas.configure(scrollregion=(0, 0, 0, 0))
+        self._update_navigation_controls()
 
     def _load_preview_for_folder(self, folder):
         if not folder or not os.path.isdir(folder):
             self._set_preview_message("目录不存在或不可访问。")
             return
 
-        self._set_preview_message("正在查找首张图片…")
         request_id = time.time()
         self._preview_request_id = request_id
+        self._set_preview_message("正在扫描目录…")
 
         def worker():
-            image_path = self._find_first_image(folder)
+            image_paths = self._find_all_images(folder)
             if self._preview_request_id != request_id:
                 return
-            if not image_path:
+            if not image_paths:
                 self.after(0, lambda: self._set_preview_message("未找到可预览的图片文件。"))
                 return
+            self.after(0, lambda: self._apply_preview_image_list(folder, image_paths, request_id))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_preview_image_list(self, folder, image_paths, request_id):
+        if self._preview_request_id != request_id:
+            return
+        self._preview_folder = folder
+        self._preview_image_paths = image_paths
+        self._preview_current_index = 0
+        self.preview_index_var.set(f"1 / {len(image_paths)}")
+        for child in self.thumbnail_inner_frame.winfo_children():
+            child.destroy()
+        self._thumbnail_photo_images = [None] * len(image_paths)
+        self._thumbnail_buttons = []
+        self._thumbnail_default_bg = None
+        self._thumbnail_default_active_bg = None
+        for idx, path in enumerate(image_paths):
+            btn = tk.Button(
+                self.thumbnail_inner_frame,
+                text=os.path.basename(path),
+                width=14,
+                height=6,
+                wraplength=100,
+                justify='center',
+                command=lambda i=idx: self._on_thumbnail_selected(i),
+            )
+            btn.grid(row=0, column=idx, padx=4, pady=4, sticky='n')
+            btn.configure(compound='top')
+            if self._thumbnail_default_bg is None:
+                self._thumbnail_default_bg = btn.cget('bg')
+                self._thumbnail_default_active_bg = btn.cget('activebackground')
+            self._thumbnail_buttons.append(btn)
+        self.thumbnail_inner_frame.update_idletasks()
+        self._update_navigation_controls()
+        self._start_thumbnail_loader(image_paths, request_id)
+        self._load_preview_image(request_id, 0)
+
+    def _start_thumbnail_loader(self, image_paths, request_id):
+        def worker():
+            for idx, path in enumerate(image_paths):
+                if self._preview_request_id != request_id:
+                    return
+                try:
+                    with Image.open(path) as thumb_img:
+                        thumb_img.load()
+                        thumb_copy = thumb_img.copy()
+                except Exception:
+                    thumb_copy = None
+
+                if thumb_copy is not None:
+                    thumb_copy.thumbnail((96, 96))
+                    photo = ImageTk.PhotoImage(thumb_copy)
+                else:
+                    photo = None
+
+                def apply(idx=idx, photo=photo):
+                    if self._preview_request_id != request_id or idx >= len(self._thumbnail_buttons):
+                        return
+                    button = self._thumbnail_buttons[idx]
+                    if photo is not None:
+                        self._thumbnail_photo_images[idx] = photo
+                        button.configure(image=photo)
+                    else:
+                        button.configure(text=os.path.basename(image_paths[idx]))
+
+                self.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _load_preview_image(self, request_id, index):
+        if self._preview_request_id != request_id:
+            return
+        if index < 0 or index >= len(self._preview_image_paths):
+            return
+        image_path = self._preview_image_paths[index]
+        load_token = (request_id, index, time.time())
+        self._current_preview_load_token = load_token
+        self.preview_image_label.configure(image='', text="加载中…")
+        self.preview_info_var.set("正在加载预览…")
+
+        def worker():
             try:
                 with Image.open(image_path) as img:
                     img.load()
-                    info_text = self._build_preview_info(folder, image_path, img, original_format=img.format)
+                    info_text = self._build_preview_info(self._preview_folder, image_path, img, original_format=img.format)
                     display_img = img.copy()
             except Exception as exc:  # pragma: no cover - 仅在 GUI 运行时触发
-                self.after(0, lambda: self._set_preview_message(f"加载预览失败: {exc}"))
+                self.after(0, lambda exc=exc: self._handle_preview_error(load_token, exc))
                 return
 
-            display_img.thumbnail((320, 320))
+            display_img.thumbnail((360, 360))
             photo = ImageTk.PhotoImage(display_img)
 
             def apply_preview():
-                if self._preview_request_id != request_id:
+                if self._current_preview_load_token != load_token:
                     return
                 self._preview_image_tk = photo
                 self.preview_image_label.configure(image=photo, text="")
                 self.preview_info_var.set(info_text)
+                self._preview_current_index = index
+                self.preview_index_var.set(f"{index + 1} / {len(self._preview_image_paths)}")
+                self._highlight_thumbnail(index)
+                self._update_navigation_controls()
 
             self.after(0, apply_preview)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _find_first_image(self, folder):
-        for root_dir, _dirs, files in os.walk(folder):
+    def _handle_preview_error(self, load_token, exc):
+        if self._current_preview_load_token != load_token:
+            return
+        self.preview_image_label.configure(image='', text="暂无预览")
+        self.preview_info_var.set(f"加载预览失败: {exc}")
+        self._preview_image_tk = None
+
+    def _navigate_preview(self, step):
+        if not self._preview_image_paths:
+            return
+        current = self._preview_current_index if self._preview_current_index is not None else 0
+        self._navigate_to_index(current + step)
+
+    def _navigate_to_index(self, index):
+        if not self._preview_image_paths:
+            return
+        index = max(0, min(index, len(self._preview_image_paths) - 1))
+        if self._preview_current_index == index and self._preview_image_tk is not None:
+            return
+        self.preview_index_var.set(f"{index + 1} / {len(self._preview_image_paths)}")
+        self._highlight_thumbnail(index)
+        self._update_navigation_controls()
+        self._load_preview_image(self._preview_request_id, index)
+
+    def _on_thumbnail_selected(self, index):
+        self._navigate_to_index(index)
+
+    def _highlight_thumbnail(self, index):
+        for idx, button in enumerate(self._thumbnail_buttons):
+            if button is None:
+                continue
+            if idx == index:
+                button.configure(relief='sunken', bg='#dbe9ff', activebackground='#dbe9ff')
+            else:
+                default_bg = self._thumbnail_default_bg or button.cget('bg')
+                default_active = self._thumbnail_default_active_bg or button.cget('activebackground')
+                button.configure(relief='raised', bg=default_bg, activebackground=default_active)
+
+    def _update_navigation_controls(self):
+        has_images = bool(self._preview_image_paths)
+        if has_images:
+            current = self._preview_current_index if self._preview_current_index is not None else 0
+            if current <= 0:
+                self.prev_button.state(['disabled'])
+            else:
+                self.prev_button.state(['!disabled'])
+            if current >= len(self._preview_image_paths) - 1:
+                self.next_button.state(['disabled'])
+            else:
+                self.next_button.state(['!disabled'])
+        else:
+            self.prev_button.state(['disabled'])
+            self.next_button.state(['disabled'])
+
+    def _find_all_images(self, folder):
+        image_paths = []
+        for root_dir, dirs, files in os.walk(folder):
+            dirs.sort()
             for filename in sorted(files):
                 if filename.lower().endswith(self._preview_supported_formats):
-                    return os.path.join(root_dir, filename)
-        return None
+                    image_paths.append(os.path.join(root_dir, filename))
+        return image_paths
 
     def _build_preview_info(self, folder, image_path, image_obj, *, original_format=None):
         rel_path = os.path.relpath(image_path, folder)
